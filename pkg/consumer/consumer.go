@@ -122,14 +122,14 @@ func (c *Consumer[T]) Subscribe(ctx context.Context, handler HandlerFunc[T]) err
 
 		rec, err := c.deserialize(msg)
 		if err != nil {
-			c.cfg.failureHandler.OnFailure(rawRecordFromMsg(msg), failure.NewFailureError("deserialization", err))
+			c.cfg.failureHandler.OnFailure(ctx, rawRecordFromMsg(msg), failure.NewFailureError("deserialization", err))
 			// commit anyway to avoid reprocessing a permanently undeserializable message
 			c.commit(msg)
 			continue
 		}
 
 		if err := handler(rec); err != nil {
-			c.cfg.failureHandler.OnFailure(rawRecordFromMsg(msg), failure.NewFailureError("handler", err))
+			c.cfg.failureHandler.OnFailure(ctx, rawRecordFromMsg(msg), failure.NewFailureError("handler", err))
 			// do NOT commit — at-least-once: message will be redelivered on restart
 			// handler should be idempotent
 			continue
@@ -166,9 +166,9 @@ func (c *Consumer[T]) SubscribeBatch(ctx context.Context, handler BatchHandlerFu
 
 		if err := handler(batch); err != nil {
 			// entire batch failed — send each record to FailureHandler
-			for i, msg := range rawBatch {
-				_ = i
+			for _, msg := range rawBatch {
 				c.cfg.failureHandler.OnFailure(
+					ctx,
 					rawRecordFromMsg(msg),
 					failure.NewFailureError("handler", err),
 				)
@@ -206,7 +206,7 @@ func (c *Consumer[T]) SubscribeBatch(ctx context.Context, handler BatchHandlerFu
 
 			rec, err := c.deserialize(msg)
 			if err != nil {
-				c.cfg.failureHandler.OnFailure(rawRecordFromMsg(msg), failure.NewFailureError("deserialization", err))
+				c.cfg.failureHandler.OnFailure(ctx, rawRecordFromMsg(msg), failure.NewFailureError("deserialization", err))
 				c.commit(msg)
 				continue
 			}
@@ -326,9 +326,6 @@ func validateConfig(cfg *config) error {
 	}
 	if cfg.registryURL == "" {
 		return fmt.Errorf("flowgate/consumer: WithSchemaRegistry is required")
-	}
-	if cfg.schemaPath == "" && cfg.schemaStruct == nil {
-		return fmt.Errorf("flowgate/consumer: either WithSchemaFile or WithSchemaStruct is required")
 	}
 	return nil
 }

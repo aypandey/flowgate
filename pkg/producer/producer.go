@@ -5,6 +5,7 @@ package producer
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"sync"
@@ -29,7 +30,6 @@ type Producer[T any] struct {
 	kafka    *confluent.Producer
 	registry *schema.Registry
 	schemaID int
-	retrier  *retrier
 
 	wg   sync.WaitGroup
 	once sync.Once
@@ -38,22 +38,31 @@ type Producer[T any] struct {
 // NewProducer creates and initialises a new Producer with the given options.
 // On startup it:
 //  1. Validates required config (brokers, topic, registry URL, schema)
-//  2. Connects to the Schema Registry and registers the schema (with retries)
-//  3. Creates the underlying confluent-kafka-go producer
-//  4. Starts the background delivery-events goroutine
+//  2. Sets the subject-level SR compatibility mode if WithSchemaCompatibility is set
+//  3. Connects to the Schema Registry and registers the schema (with retries)
+//  4. Validates that T's fields are type-compatible with the registered schema
+//  5. Creates the underlying confluent-kafka-go producer
+//  6. Starts the background delivery-events goroutine
 //
 // Example:
 //
-//	p, err := producer.NewProducer[Order](
+//	p, err := producer.NewProducer[orderv2.Order](
 //	    producer.WithBrokers("localhost:9092"),
 //	    producer.WithSchemaRegistry("http://localhost:8081"),
 //	    producer.WithTopic("payments.order"),
-//	    producer.WithSchemaFile("schemas/order/v1/order.avsc"),
+//	    // schema.Provider auto-detected — no WithSchemaFile needed
 //	)
 func NewProducer[T any](opts ...Option) (*Producer[T], error) {
 	cfg := defaultConfig()
 	for _, opt := range opts {
 		opt(cfg)
+	}
+
+	// Auto-detect schema from T if it implements schema.Provider.
+	// Do this before validateConfig so the presence of the embedded schema satisfies the check.
+	var zero T
+	if sp, ok := any(zero).(schema.Provider); ok && cfg.schemaString == "" && cfg.schemaPath == "" && cfg.schemaStruct == nil {
+		cfg.schemaString = sp.AvroSchema()
 	}
 
 	if err := validateConfig(cfg); err != nil {
@@ -75,6 +84,16 @@ func NewProducer[T any](opts ...Option) (*Producer[T], error) {
 		return nil, fmt.Errorf("flowgate/producer: failed to connect to schema registry: %w", err)
 	}
 
+	subject := schema.SubjectName(cfg.topic)
+
+	// set subject-level compatibility mode before registration if requested
+	if cfg.schemaCompatibility != "" {
+		if err := reg.SetCompatibility(subject, cfg.schemaCompatibility); err != nil {
+			return nil, fmt.Errorf("flowgate/producer: %w", err)
+		}
+		log.Printf("flowgate/producer: set compatibility=%s for subject=%s", cfg.schemaCompatibility, subject)
+	}
+
 	// code-first: generate schema string outside the retry loop (deterministic)
 	var schemaStr string
 	if cfg.schemaStruct != nil {
@@ -85,14 +104,17 @@ func NewProducer[T any](opts ...Option) (*Producer[T], error) {
 	}
 
 	// register schema with retries for transient SR failures
+	// priority: embedded (Provider interface) > schema file > code-first struct
 	r := newRetrier(cfg.retryConfig)
-	subject := schema.SubjectName(cfg.topic)
 	var schemaID int
 	err = r.Do(context.Background(), func() error {
 		var regErr error
-		if cfg.schemaPath != "" {
+		switch {
+		case cfg.schemaPath != "":
 			schemaID, regErr = reg.RegisterFromFile(subject, cfg.schemaPath)
-		} else {
+		case cfg.schemaString != "":
+			schemaID, regErr = reg.RegisterFromString(subject, cfg.schemaString)
+		default:
 			schemaID, regErr = reg.RegisterFromString(subject, schemaStr)
 		}
 		return regErr
@@ -113,7 +135,17 @@ func NewProducer[T any](opts ...Option) (*Producer[T], error) {
 		kafka:    kp,
 		registry: reg,
 		schemaID: schemaID,
-		retrier:  r,
+	}
+
+	// Startup validation: verify T's fields are type-compatible with the registered schema.
+	// Serializing the zero value of T catches field type mismatches (e.g. Amount string vs
+	// Avro double) immediately at startup rather than on the first real message.
+	// Note: omitempty fields at zero value are excluded from the map and are checked lazily
+	// on first non-zero send.
+	if _, serErr := p.serialize(zero); serErr != nil {
+		kp.Close()
+		return nil, fmt.Errorf("flowgate/producer: struct %T is incompatible with registered schema (id=%d): %w",
+			zero, schemaID, serErr)
 	}
 
 	// start background goroutine to drain delivery events from librdkafka
@@ -135,10 +167,13 @@ func NewProducer[T any](opts ...Option) (*Producer[T], error) {
 func (p *Producer[T]) Send(ctx context.Context, r *record.ProducerRecord[T]) error {
 	payload, err := p.serialize(r.Payload)
 	if err != nil {
-		p.cfg.failureHandler.OnFailure(failure.RawRecord{
+		// Best-effort JSON fallback so the FailureHandler has the original value to work with.
+		rawJSON, _ := json.Marshal(r.Payload)
+		p.cfg.failureHandler.OnFailure(ctx, failure.RawRecord{
 			Topic:   p.cfg.topic,
 			Key:     r.Key,
 			Headers: r.Headers,
+			Payload: rawJSON,
 		}, failure.NewFailureError("serialization", err))
 		return fmt.Errorf("flowgate/producer: serialization failed: %w", err)
 	}
@@ -153,6 +188,10 @@ func (p *Producer[T]) Send(ctx context.Context, r *record.ProducerRecord[T]) err
 // SendAsync serializes and enqueues a record, returning a channel that receives
 // the delivery result. The channel receives exactly one SendResult and is then closed.
 //
+// Unlike Send, delivery failures are reported via the returned channel AND via
+// FailureHandler — both are called so callers get a result regardless of whether
+// they monitor the channel.
+//
 // Example:
 //
 //	resultCh := p.SendAsync(ctx, record.RecordOf(order))
@@ -165,10 +204,12 @@ func (p *Producer[T]) SendAsync(ctx context.Context, r *record.ProducerRecord[T]
 
 	payload, err := p.serialize(r.Payload)
 	if err != nil {
-		p.cfg.failureHandler.OnFailure(failure.RawRecord{
+		rawJSON, _ := json.Marshal(r.Payload)
+		p.cfg.failureHandler.OnFailure(ctx, failure.RawRecord{
 			Topic:   p.cfg.topic,
 			Key:     r.Key,
 			Headers: r.Headers,
+			Payload: rawJSON,
 		}, failure.NewFailureError("serialization", err))
 		resultCh <- SendResult{Err: fmt.Errorf("flowgate/producer: serialization failed: %w", err)}
 		close(resultCh)
@@ -186,6 +227,24 @@ func (p *Producer[T]) SendAsync(ctx context.Context, r *record.ProducerRecord[T]
 	go func() {
 		e := <-deliveryChan
 		m := e.(*confluent.Message)
+		if m.TopicPartition.Error != nil {
+			// Call FailureHandler so DLQ/logging handlers receive delivery failures
+			// from SendAsync just as they do from Send via runEvents().
+			headers := make(map[string]string, len(m.Headers))
+			for _, h := range m.Headers {
+				headers[h.Key] = string(h.Value)
+			}
+			key := ""
+			if m.Key != nil {
+				key = string(m.Key)
+			}
+			p.cfg.failureHandler.OnFailure(context.Background(), failure.RawRecord{
+				Topic:   p.cfg.topic,
+				Key:     key,
+				Headers: headers,
+				Payload: m.Value,
+			}, failure.NewFailureError("delivery", m.TopicPartition.Error))
+		}
 		resultCh <- SendResult{Err: m.TopicPartition.Error}
 		close(resultCh)
 	}()
@@ -235,7 +294,9 @@ func (p *Producer[T]) Close() {
 }
 
 // runEvents drains librdkafka's delivery event channel.
-// For each failed delivery, it calls FailureHandler.OnFailure.
+// For each failed delivery it calls FailureHandler.OnFailure.
+// Only fires for messages produced via Send (nil deliveryChan).
+// Messages produced via SendAsync use a per-message channel handled in that goroutine.
 // Exits naturally when kafka.Close() closes the Events() channel.
 func (p *Producer[T]) runEvents() {
 	defer p.wg.Done()
@@ -253,7 +314,7 @@ func (p *Producer[T]) runEvents() {
 			if msg.Key != nil {
 				key = string(msg.Key)
 			}
-			p.cfg.failureHandler.OnFailure(failure.RawRecord{
+			p.cfg.failureHandler.OnFailure(context.Background(), failure.RawRecord{
 				Topic:   p.cfg.topic,
 				Key:     key,
 				Headers: headers,
@@ -312,8 +373,8 @@ func validateConfig(cfg *config) error {
 	if cfg.registryURL == "" {
 		return fmt.Errorf("flowgate/producer: WithSchemaRegistry is required")
 	}
-	if cfg.schemaPath == "" && cfg.schemaStruct == nil {
-		return fmt.Errorf("flowgate/producer: either WithSchemaFile or WithSchemaStruct is required")
+	if cfg.schemaString == "" && cfg.schemaPath == "" && cfg.schemaStruct == nil {
+		return fmt.Errorf("flowgate/producer: schema required — T must implement schema.Provider, or use WithSchemaFile/WithSchemaStruct")
 	}
 	return nil
 }

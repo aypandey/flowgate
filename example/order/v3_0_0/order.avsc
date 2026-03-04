@@ -1,0 +1,14 @@
+{
+  "type": "record",
+  "name": "Order",
+  "namespace": "com.aypandey.flowgate.example",
+  "doc": "Payment order event — schema version 3.0.0 (MAJOR / BREAKING). The amount field type changed from double to string. This is incompatible with v1/v2 consumers.",
+  "fields": [
+    {"name": "order_id",     "type": "string", "doc": "Unique order identifier."},
+    {"name": "customer_id",  "type": "string", "doc": "Identifier of the customer who placed the order."},
+    {"name": "amount",       "type": "string", "doc": "BREAKING CHANGE: was double, now a pre-formatted string (e.g. '149.99 USD')."},
+    {"name": "currency",     "type": "string", "doc": "ISO 4217 currency code (e.g. USD, EUR)."},
+    {"name": "status",       "type": "string", "doc": "Order lifecycle status (PENDING, CONFIRMED, SHIPPED, CANCELLED)."},
+    {"name": "created_at",   "type": "string", "doc": "RFC3339 timestamp of order creation."}
+  ]
+}

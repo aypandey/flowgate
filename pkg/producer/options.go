@@ -4,22 +4,25 @@ import (
 	"time"
 
 	"github.com/aypandey/flowgate/pkg/failure"
+	"github.com/aypandey/flowgate/pkg/schema"
 	confluent "github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
 
 // config holds all configuration for a Producer instance.
 // It is populated by functional options and never exposed directly to teams.
 type config struct {
-	brokers         string
-	topic           string
-	registryURL     string
-	schemaPath      string        // path to .avsc file (schema-first)
-	schemaStruct    interface{}   // struct with avro tags (code-first)
-	bufferConfig    BufferConfig
-	retryConfig     RetryConfig
-	shutdownTimeout time.Duration
-	failureHandler  failure.FailureHandler
-	rawConfig       map[string]interface{}
+	brokers             string
+	topic               string
+	registryURL         string
+	schemaString        string                  // embedded schema JSON — set automatically when T implements schema.Provider
+	schemaPath          string                  // path to .avsc file (schema-first fallback)
+	schemaStruct        interface{}             // struct with avro tags (code-first fallback)
+	schemaCompatibility schema.CompatibilityMode // optional: set subject-level SR compatibility before registration
+	bufferConfig        BufferConfig
+	retryConfig         RetryConfig
+	shutdownTimeout     time.Duration
+	failureHandler      failure.FailureHandler
+	rawConfig           map[string]interface{}
 }
 
 // defaultConfig returns sensible production-ready defaults.
@@ -157,6 +160,22 @@ func WithShutdownTimeout(d time.Duration) Option {
 //	producer.WithFailureHandler(failure.NoOp) // allow loss explicitly
 func WithFailureHandler(fh failure.FailureHandler) Option {
 	return func(c *config) { c.failureHandler = fh }
+}
+
+// WithSchemaCompatibility sets the subject-level compatibility mode in the Schema
+// Registry before registering the schema. Use this when the global SR default
+// is not appropriate for this topic.
+//
+// Minor/patch versions (add optional field with Avro default):
+//
+//	producer.WithSchemaCompatibility(schema.CompatibilityBackward)
+//
+// Major versions with breaking changes must use a new topic; set the new
+// subject to NONE so the first registration is always accepted:
+//
+//	producer.WithSchemaCompatibility(schema.CompatibilityNone)
+func WithSchemaCompatibility(mode schema.CompatibilityMode) Option {
+	return func(c *config) { c.schemaCompatibility = mode }
 }
 
 // WithRawConfig passes raw confluent-kafka-go ConfigMap entries directly to

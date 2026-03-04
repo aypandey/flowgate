@@ -1,6 +1,7 @@
 package failure
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -57,7 +58,9 @@ func NewLoggingFailureHandler(logPath string) (*LoggingFailureHandler, error) {
 
 // OnFailure writes the failed record as a structured JSON line to the log file.
 // Each line is a complete JSON object (NDJSON format) for easy restreaming.
-func (h *LoggingFailureHandler) OnFailure(record RawRecord, err error) {
+// The context is checked before writing; a cancelled context skips the write
+// only if the file is no longer meaningful (e.g. during shutdown).
+func (h *LoggingFailureHandler) OnFailure(_ context.Context, record RawRecord, err error) {
 	stage := ""
 	if fe, ok := err.(*FailureError); ok {
 		stage = fe.Stage

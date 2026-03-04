@@ -1,5 +1,7 @@
 package failure
 
+import "context"
+
 // NoOpFailureHandler is a FailureHandler that silently discards failed messages.
 // Use this only when message loss is explicitly acceptable — for example,
 // high-frequency metrics or telemetry where occasional loss is tolerable.
@@ -19,4 +21,4 @@ type noOpFailureHandler struct{}
 var NoOp FailureHandler = &noOpFailureHandler{}
 
 // OnFailure does nothing. The record is silently discarded.
-func (h *noOpFailureHandler) OnFailure(_ RawRecord, _ error) {}
+func (h *noOpFailureHandler) OnFailure(_ context.Context, _ RawRecord, _ error) {}

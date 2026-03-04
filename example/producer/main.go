@@ -1,4 +1,8 @@
 // Example producer — demonstrates how a team uses flowgate to send Order events to Kafka.
+//
+// The producer team imports the versioned order package at the schema version they want
+// to publish. No WithSchemaFile is needed — the schema is embedded in the package.
+//
 // Run: go run example/producer/main.go
 package main
 
@@ -8,7 +12,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/aypandey/flowgate/example/model"
+	orderv2 "github.com/aypandey/flowgate/example/order/v2_0_0"
 	"github.com/aypandey/flowgate/pkg/producer"
 	"github.com/aypandey/flowgate/pkg/record"
 )
@@ -17,11 +21,13 @@ func main() {
 	ctx := context.Background()
 
 	// --- 1. Initialise the producer ---
-	p, err := producer.NewProducer[model.Order](
+	// Import orderv2 and flowgate auto-registers its embedded schema.
+	// Bump to orderv3 when a new schema version ships — nothing else changes.
+	p, err := producer.NewProducer[orderv2.Order](
 		producer.WithBrokers("localhost:9092"),
 		producer.WithSchemaRegistry("http://localhost:8081"),
 		producer.WithTopic("payments.order"),
-		producer.WithSchemaFile("example/schemas/order/v2/order.avsc"),
+		// no WithSchemaFile — orderv2.Order implements schema.Provider
 		producer.WithBufferConfig(producer.BufferConfig{
 			Size:          50,
 			FlushInterval: 500 * time.Millisecond,
@@ -37,10 +43,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to create producer: %v", err)
 	}
-	defer p.Close() // flushes buffer before closing
+	defer p.Close()
 
 	// --- 2. Send messages ---
-	orders := []model.Order{
+	orders := []orderv2.Order{
 		{
 			OrderID:    "ord-001",
 			CustomerID: "cust-abc",
@@ -56,7 +62,7 @@ func main() {
 			Currency:       "EUR",
 			Status:         "CONFIRMED",
 			CreatedAt:      time.Now().UTC().Format(time.RFC3339),
-			DiscountAmount: 29.90, // v2 field
+			DiscountAmount: 29.90,
 		},
 		{
 			OrderID:    "ord-003",
@@ -70,7 +76,7 @@ func main() {
 
 	for _, order := range orders {
 		r := record.RecordOf(order).
-			WithKey(order.OrderID). // route by order ID for partition ordering
+			WithKey(order.OrderID).
 			WithHeader("source-service", "payments-api").
 			WithHeader("correlation-id", fmt.Sprintf("corr-%s", order.OrderID))
 

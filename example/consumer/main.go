@@ -1,5 +1,10 @@
 // Example consumer — demonstrates how a team uses flowgate to consume Order events
 // and forward them to an external destination (simulated Elasticsearch here).
+//
+// The consumer team imports the versioned order package at the schema version they
+// want to deserialise into. No WithSchemaFile is needed — the consumer reads the
+// schema ID from the Confluent wire header and fetches the schema from the registry.
+//
 // Run: go run example/consumer/main.go
 package main
 
@@ -15,7 +20,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/aypandey/flowgate/example/model"
+	orderv2 "github.com/aypandey/flowgate/example/order/v2_0_0"
 	"github.com/aypandey/flowgate/pkg/consumer"
 	"github.com/aypandey/flowgate/pkg/record"
 )
@@ -34,14 +39,16 @@ func main() {
 	}()
 
 	// --- 1. Initialise the consumer ---
-	c, err := consumer.NewConsumer[model.Order](
+	// Import orderv2 to deserialise into the v2 struct.
+	// A team still on v1 would import orderv1 instead — Avro backward compatibility
+	// means v2 messages are readable by a v1 consumer (discount_amount defaults to 0).
+	c, err := consumer.NewConsumer[orderv2.Order](
 		consumer.WithBrokers("localhost:9092"),
 		consumer.WithSchemaRegistry("http://localhost:8081"),
 		consumer.WithTopic("payments.order"),
 		consumer.WithGroupID("order-indexing-service"),
-		consumer.WithSchemaFile("example/schemas/order/v2/order.avsc"),
+		// no WithSchemaFile — schema ID is read from each message's wire header
 		consumer.WithShutdownTimeout(10*time.Second),
-		// example of raw config passthrough for power users
 		consumer.WithRawConfig(map[string]interface{}{
 			"max.poll.interval.ms": 300000,
 			"session.timeout.ms":   45000,
@@ -54,15 +61,14 @@ func main() {
 
 	esClient := newElasticSearchClient("http://localhost:9200")
 
-	// --- 2a. Single message subscription ---
+	// --- 2. Single message subscription ---
 	log.Println("starting single-message consumer...")
-	if err := c.Subscribe(ctx, func(r *record.ConsumerRecord[model.Order]) error {
+	if err := c.Subscribe(ctx, func(r *record.ConsumerRecord[orderv2.Order]) error {
 		order := r.Payload
 		log.Printf("received order %s (status=%s amount=%.2f %s partition=%d offset=%d)",
 			order.OrderID, order.Status, order.Amount, order.Currency,
 			r.Partition, r.Offset,
 		)
-		// forward to Elasticsearch
 		return esClient.Index("orders", order.OrderID, order)
 	}); err != nil {
 		if err != context.Canceled {

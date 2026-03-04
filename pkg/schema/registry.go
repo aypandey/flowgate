@@ -12,6 +12,23 @@ import (
 	"github.com/riferrei/srclient"
 )
 
+// CompatibilityMode is the Schema Registry subject-level compatibility setting.
+// Re-exported from srclient so callers do not need to import srclient directly.
+type CompatibilityMode = srclient.CompatibilityLevel
+
+// Compatibility mode constants for use with WithSchemaCompatibility.
+// Minor/patch upgrades (add optional field with default) → CompatibilityBackward.
+// Major upgrades (breaking type change, field removal) → new topic required.
+const (
+	CompatibilityNone               CompatibilityMode = srclient.None
+	CompatibilityBackward           CompatibilityMode = srclient.Backward
+	CompatibilityBackwardTransitive CompatibilityMode = srclient.BackwardTransitive
+	CompatibilityForward            CompatibilityMode = srclient.Forward
+	CompatibilityForwardTransitive  CompatibilityMode = srclient.ForwardTransitive
+	CompatibilityFull               CompatibilityMode = srclient.Full
+	CompatibilityFullTransitive     CompatibilityMode = srclient.FullTransitive
+)
+
 // Registry wraps the Confluent Schema Registry client.
 // It caches schema IDs and codecs to avoid redundant network calls
 // on every message send/receive.
@@ -114,6 +131,21 @@ func (r *Registry) GetSchemaID(subject string) (int, error) {
 		return 0, fmt.Errorf("flowgate/schema: schema not registered for subject %q — call Register first", subject)
 	}
 	return id, nil
+}
+
+// SetCompatibility sets the subject-level compatibility mode in the Schema Registry.
+// Call this (via WithSchemaCompatibility) before registering a new schema version
+// when the subject's global default is not appropriate.
+//
+// Minor versions (add optional field with default): CompatibilityBackward
+// Major versions (breaking change): requires a new topic — use CompatibilityNone
+// on the new subject only.
+func (r *Registry) SetCompatibility(subject string, mode CompatibilityMode) error {
+	if _, err := r.client.ChangeSubjectCompatibilityLevel(subject, mode); err != nil {
+		return fmt.Errorf("flowgate/schema: failed to set compatibility %q for subject %q: %w",
+			mode, subject, err)
+	}
+	return nil
 }
 
 // SubjectName returns the Schema Registry subject name for a given topic.

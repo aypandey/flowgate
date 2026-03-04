@@ -1,0 +1,14 @@
+{
+  "type": "record",
+  "name": "Order",
+  "namespace": "com.aypandey.flowgate.example",
+  "doc": "Payment order event — schema version 1.",
+  "fields": [
+    {"name": "order_id",     "type": "string", "doc": "Unique order identifier."},
+    {"name": "customer_id",  "type": "string", "doc": "Identifier of the customer who placed the order."},
+    {"name": "amount",       "type": "double", "doc": "Total order amount."},
+    {"name": "currency",     "type": "string", "doc": "ISO 4217 currency code (e.g. USD, EUR)."},
+    {"name": "status",       "type": "string", "doc": "Order lifecycle status (PENDING, CONFIRMED, SHIPPED, CANCELLED)."},
+    {"name": "created_at",   "type": "string", "doc": "RFC3339 timestamp of order creation."}
+  ]
+}

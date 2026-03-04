@@ -7,19 +7,21 @@ import (
 	confluent "github.com/confluentinc/confluent-kafka-go/v2/kafka"
 )
 
+// WithSchemaFile is intentionally absent from the consumer.
+// The consumer reads the schema ID from the Confluent wire header of each message
+// and fetches the schema from the Schema Registry by ID — no local schema file needed.
+
 // config holds all configuration for a Consumer instance.
 type config struct {
-	brokers         string
-	topic           string
-	groupID         string
-	registryURL     string
-	schemaPath      string
-	schemaStruct    interface{}
-	batchSize       int
+	brokers            string
+	topic              string
+	groupID            string
+	registryURL        string
+	batchSize          int
 	batchFlushInterval time.Duration
-	shutdownTimeout time.Duration
-	failureHandler  failure.FailureHandler
-	rawConfig       map[string]interface{}
+	shutdownTimeout    time.Duration
+	failureHandler     failure.FailureHandler
+	rawConfig          map[string]interface{}
 }
 
 func defaultConfig() *config {
@@ -53,16 +55,6 @@ func WithGroupID(groupID string) Option {
 // WithSchemaRegistry sets the Confluent Schema Registry URL.
 func WithSchemaRegistry(url string) Option {
 	return func(c *config) { c.registryURL = url }
-}
-
-// WithSchemaFile sets the path to the Avro schema file (.avsc) for schema-first teams.
-func WithSchemaFile(path string) Option {
-	return func(c *config) { c.schemaPath = path }
-}
-
-// WithSchemaStruct sets the Go struct for code-first schema teams.
-func WithSchemaStruct(s interface{}) Option {
-	return func(c *config) { c.schemaStruct = s }
 }
 
 // WithBatchSize sets the number of records to accumulate before invoking

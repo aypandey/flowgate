@@ -6,7 +6,10 @@
 // Teams can plug in their own implementation or opt into NoOpFailureHandler to allow loss.
 package failure
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
 // RawRecord holds the raw bytes of a failed message along with its metadata.
 // Used when deserialization itself fails and we cannot produce a typed record.
@@ -31,11 +34,11 @@ type RawRecord struct {
 // Example custom implementation:
 //
 //	type MyDLQHandler struct { client *sqs.Client }
-//	func (h *MyDLQHandler) OnFailure(r failure.RawRecord, err error) {
-//	    h.client.SendMessage(r.Payload)
+//	func (h *MyDLQHandler) OnFailure(ctx context.Context, r failure.RawRecord, err error) {
+//	    h.client.SendMessage(ctx, r.Payload)
 //	}
 type FailureHandler interface {
-	OnFailure(record RawRecord, err error)
+	OnFailure(ctx context.Context, record RawRecord, err error)
 }
 
 // FailureError wraps the original error with additional context
